@@ -53,10 +53,21 @@ REQUIRED_PACKAGES = [
     "requests>=2.32.0",
     "pillow>=10.4.0",
     "pyinstaller>=6.8.0",
-    "pywin32>=306",
     "psutil>=5.9.0",
     "packaging>=23.0"
 ]
+
+# Add Windows-specific packages
+if sys.platform == "win32":
+    REQUIRED_PACKAGES.append("pywin32>=306")
+
+# Map pip package names to their importable module names
+PACKAGE_TO_MODULE_MAP = {
+    "pywebview": "webview",
+    "pillow": "PIL",
+    "pyinstaller": "PyInstaller",
+    "pywin32": "win32api"
+}
 
 def show_splash():
     """Show splash screen during dependency installation."""
@@ -102,40 +113,64 @@ def show_splash():
 
 def check_and_install_dependencies():
     """Check for required packages and install if missing with modern UI."""
+
     missing_packages = []
     
     # Check each required package
     for package in REQUIRED_PACKAGES:
-        package_name = package.split(">=")[0].replace("-", "_")
+        package_name_pip = package.split(">=")[0]
+        # Get the module name from map, or default to pip name (replacing hyphens)
+        module_name = PACKAGE_TO_MODULE_MAP.get(package_name_pip, package_name_pip.replace("-", "_"))
+
         try:
-            importlib.import_module(package_name)
+            importlib.import_module(module_name)
         except ImportError:
             missing_packages.append(package)
     
     if missing_packages:
-        splash, status_label = show_splash()
+        is_gui_mode = len(sys.argv) == 1
+        splash = None
+        status_label = None
+
+        if is_gui_mode:
+            splash, status_label = show_splash()
+        else:
+            print("Missing packages found. Installing...")
         
         try:
             for i, package in enumerate(missing_packages):
-                status_label.config(text=f"Installing {package}... ({i+1}/{len(missing_packages)})")
-                splash.update()
+                if is_gui_mode:
+                    status_label.config(text=f"Installing {package}... ({i+1}/{len(missing_packages)})")
+                    splash.update()
+                else:
+                    print(f"Installing {package}... ({i+1}/{len(missing_packages)})")
                 
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", package, "--quiet"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ], stdout=subprocess.DEVNULL)
             
-            status_label.config(text="Installation complete! Restarting...")
-            splash.update()
-            time.sleep(1)
-            
-            splash.destroy()
+            if is_gui_mode:
+                status_label.config(text="Installation complete! Restarting...")
+                splash.update()
+                time.sleep(1)
+            else:
+                print("Installation complete! Restarting...")
+
+            if splash:
+                splash.destroy()
             # Restart the script
             os.execv(sys.executable, [sys.executable] + sys.argv)
             
         except subprocess.CalledProcessError as e:
-            splash.destroy()
-            messagebox.showerror("Installation Error", 
-                               f"Failed to install dependencies.\nPlease run: pip install {' '.join(missing_packages)}")
+            if splash:
+                splash.destroy()
+
+            error_message = f"Failed to install dependencies.\nPlease run: pip install {' '.join(missing_packages)}"
+            if is_gui_mode:
+                messagebox.showerror("Installation Error", error_message)
+            else:
+                print(f"Installation Error: {error_message}")
+
             sys.exit(1)
 
 # Run dependency check first
@@ -215,7 +250,7 @@ class AppMetadata(BaseModel):
 
 class BuildConfig(BaseModel):
     """Advanced build configuration."""
-    source_type: str = Field(default="folder", regex="^(folder|url)$")
+    source_type: str = Field(default="folder", pattern="^(folder|url)$")
     source_path: str = ""
     output_dir: str = "dist"
     offline_mode: bool = False
@@ -2089,13 +2124,15 @@ def doctor():
         checks.append(("❌", "PyInstaller", "Not found"))
     
     # Dependencies
-    for package in ["flask", "webview", "pillow", "requests", "rich", "typer"]:
+    for package_req in REQUIRED_PACKAGES:
+        package_name_pip = package_req.split(">=")[0]
+        module_name = PACKAGE_TO_MODULE_MAP.get(package_name_pip, package_name_pip.replace("-", "_"))
         try:
-            module = importlib.import_module(package)
+            module = importlib.import_module(module_name)
             version = getattr(module, '__version__', 'Unknown')
-            checks.append(("✅", package, version))
+            checks.append(("✅", package_name_pip, version))
         except ImportError:
-            checks.append(("❌", package, "Not installed"))
+            checks.append(("❌", package_name_pip, "Not installed"))
     
     # System info
     checks.append(("ℹ️", "Platform", f"{sys.platform}"))
