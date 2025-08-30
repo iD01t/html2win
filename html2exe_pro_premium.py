@@ -37,9 +37,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, Callable
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import tkinter.font as tkFont
 
 # Auto-install dependencies with progress
 REQUIRED_PACKAGES = [
@@ -53,97 +50,60 @@ REQUIRED_PACKAGES = [
     "requests>=2.32.0",
     "pillow>=10.4.0",
     "pyinstaller>=6.8.0",
-    "pywin32>=306",
     "psutil>=5.9.0",
     "packaging>=23.0"
 ]
 
-def show_splash():
-    """Show splash screen during dependency installation."""
-    splash = tk.Tk()
-    splash.title("HTML2EXE Pro Premium")
-    splash.geometry("500x300")
-    splash.configure(bg='#1a1a1a')
-    splash.resizable(False, False)
-    
-    # Center the window
-    splash.eval('tk::PlaceWindow . center')
-    
-    # Logo/Title
-    title_frame = tk.Frame(splash, bg='#1a1a1a')
-    title_frame.pack(pady=40)
-    
-    title_label = tk.Label(title_frame, text="HTML2EXE", 
-                          font=('Arial', 24, 'bold'), 
-                          fg='#00D4AA', bg='#1a1a1a')
-    title_label.pack()
-    
-    subtitle_label = tk.Label(title_frame, text="Pro Premium", 
-                             font=('Arial', 14), 
-                             fg='#ffffff', bg='#1a1a1a')
-    subtitle_label.pack()
-    
-    # Status
-    status_frame = tk.Frame(splash, bg='#1a1a1a')
-    status_frame.pack(pady=20)
-    
-    status_label = tk.Label(status_frame, text="Initializing...", 
-                           font=('Arial', 11), 
-                           fg='#cccccc', bg='#1a1a1a')
-    status_label.pack()
-    
-    # Progress bar
-    progress = ttk.Progressbar(splash, length=300, mode='indeterminate')
-    progress.pack(pady=10)
-    progress.start()
-    
-    splash.update()
-    return splash, status_label
+if sys.platform == "win32":
+    REQUIRED_PACKAGES.append("pywin32>=306")
 
 def check_and_install_dependencies():
-    """Check for required packages and install if missing with modern UI."""
+    """Check for required packages and install if missing."""
     missing_packages = []
     
     # Check each required package
     for package in REQUIRED_PACKAGES:
-        package_name = package.split(">=")[0].replace("-", "_")
+        package_name = package.split(">=")[0]
+        import_name = package_name.replace("-", "_")
+        if import_name == 'pywin32':
+            import_name = 'win32api'
+        elif import_name == 'pillow':
+            import_name = 'PIL'
+        elif import_name == 'pyinstaller':
+            import_name = 'PyInstaller'
+
         try:
-            importlib.import_module(package_name)
+            importlib.import_module(import_name)
         except ImportError:
             missing_packages.append(package)
     
     if missing_packages:
-        splash, status_label = show_splash()
+        print("HTML2EXE Pro Premium: Missing required packages. Installing now...")
         
         try:
             for i, package in enumerate(missing_packages):
-                status_label.config(text=f"Installing {package}... ({i+1}/{len(missing_packages)})")
-                splash.update()
+                print(f"Installing {package}... ({i+1}/{len(missing_packages)})")
                 
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", package, "--quiet"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            status_label.config(text="Installation complete! Restarting...")
-            splash.update()
+            print("Installation complete! Restarting...")
             time.sleep(1)
             
-            splash.destroy()
             # Restart the script
             os.execv(sys.executable, [sys.executable] + sys.argv)
             
         except subprocess.CalledProcessError as e:
-            splash.destroy()
-            messagebox.showerror("Installation Error", 
-                               f"Failed to install dependencies.\nPlease run: pip install {' '.join(missing_packages)}")
+            print(f"Error: Failed to install dependencies.")
+            print(f"Please run: pip install {' '.join(missing_packages)}")
             sys.exit(1)
 
 # Run dependency check first
-check_and_install_dependencies()
+# check_and_install_dependencies()
 
 # Now import the required packages
 import typer
-from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from rich.logging import RichHandler
 from rich.table import Table
@@ -155,14 +115,9 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import flask
 from flask import Flask, send_from_directory, jsonify, request
-import webview
 import requests
-from PIL import Image, ImageDraw, ImageFont
 import psutil
 from packaging import version
-
-# Initialize console for rich output
-console = Console()
 
 # Constants
 APP_NAME = "HTML2EXE Pro Premium"
@@ -206,7 +161,7 @@ class AppMetadata(BaseModel):
     name: str = "MyHTMLApp"
     version: str = "1.0.0"
     company: str = "My Company"
-    copyright: str = f"© {datetime.now().year} My Company"
+    copyright: str = Field(default_factory=lambda: f"© {datetime.now().year} My Company")
     description: str = "HTML Desktop Application"
     author: str = "Developer"
     email: str = "developer@company.com"
@@ -270,7 +225,7 @@ class AppConfig(BaseModel):
                     data = json.load(f)
                 return cls(**data)
         except Exception as e:
-            console.print(f"[yellow]Warning: Could not load config: {e}[/yellow]")
+            print(f"Warning: Could not load config: {e}")
         return cls()
 
 # Enhanced Flask App Factory
@@ -411,7 +366,7 @@ class LiveReloadHandler(FileSystemEventHandler):
             if self.webview_window:
                 self.webview_window.evaluate_js('window.location.reload()')
         except Exception as e:
-            console.print(f"[yellow]Reload failed: {e}[/yellow]")
+            print(f"Reload failed: {e}")
         finally:
             self.pending_reload = False
 
@@ -422,6 +377,8 @@ class IconGenerator:
     @staticmethod
     def generate_icon(text: str, output_path: str, size: int = 256):
         """Generate professional application icon."""
+        from PIL import Image, ImageDraw, ImageFont
+
         # Create image with gradient background
         img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
@@ -440,14 +397,24 @@ class IconGenerator:
                     fill=(255, 255, 255, 30))
         
         # Draw text
-        try:
-            font_size = size // 4
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except:
+        font = None
+        font_size = size // 4
+
+        # List of common, cross-platform fonts to try (lowercase for case-insensitivity)
+        font_names = [
+            "dejavusans.ttf", "liberationsans-regular.ttf", "arial.ttf", "calibri.ttf"
+        ]
+
+        for font_name in font_names:
             try:
-                font = ImageFont.truetype("calibri.ttf", font_size)
-            except:
-                font = ImageFont.load_default()
+                font = ImageFont.truetype(font_name, font_size)
+                break  # Stop if font is found
+            except IOError:
+                continue # Try next font
+
+        if not font:
+            print(f"Warning: No premium fonts found. Falling back to default font.")
+            font = ImageFont.load_default()
         
         # Get text dimensions
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -710,6 +677,10 @@ class ModernGUI:
         
     def run(self):
         """Run the modern GUI application."""
+        import tkinter as tk
+        from tkinter import ttk, filedialog, messagebox
+        import tkinter.font as tkFont
+
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} - Premium Edition")
         self.root.geometry("1200x800")
@@ -1313,7 +1284,7 @@ Ready to build your professional desktop application!
                 self.config.build.custom_protocol = self.protocol_var.get()
                 
         except Exception as e:
-            console.print(f"[yellow]Warning: Error syncing config: {e}[/yellow]")
+            print(f"Warning: Error syncing config: {e}")
     
     def _browse_source(self):
         """Browse for source folder or enter URL."""
@@ -1385,14 +1356,17 @@ Ready to build your professional desktop application!
             from threading import Thread
             
             PORT = 8000
-            Handler = http.server.SimpleHTTPRequestHandler
+
+            # Create a handler that serves files from the specified directory
+            # This avoids using os.chdir, which is not thread-safe
+            Handler = lambda *args, **kwargs: http.server.SimpleHTTPRequestHandler(
+                *args, directory=self.config.build.source_path, **kwargs
+            )
             
             def serve():
                 with socketserver.TCPServer(("", PORT), Handler) as httpd:
+                    print(f"Preview server running at http://localhost:{PORT}")
                     httpd.serve_forever()
-            
-            # Change to source directory
-            os.chdir(self.config.build.source_path)
             
             # Start server in background
             server_thread = Thread(target=serve, daemon=True)
@@ -1968,8 +1942,8 @@ def build(
     output: str = typer.Option("dist", "--output", "-o", help="Output directory")
 ):
     """Build HTML application to executable."""
-    console.print(f"[bold green]HTML2EXE Pro Premium v{APP_VERSION}[/bold green]")
-    console.print(f"Building application: [bold]{name}[/bold]")
+    print(f"HTML2EXE Pro Premium v{APP_VERSION}")
+    print(f"Building application: {name}")
     
     # Create configuration
     config = AppConfig()
@@ -1987,7 +1961,7 @@ def build(
     
     # Validate source
     if config.build.source_type == "folder" and not os.path.exists(src):
-        console.print("[red]Error: Source folder does not exist[/red]")
+        print("Error: Source folder does not exist")
         raise typer.Exit(1)
     
     # Start build
@@ -2009,16 +1983,16 @@ def build(
             result = engine.build()
             
             if result["success"]:
-                console.print("[green]✅ Build completed successfully![/green]")
-                console.print(f"[blue]📁 Output:[/blue] {result['exe_path']}")
-                console.print(f"[blue]📊 Size:[/blue] {result['exe_size']}")
-                console.print(f"[blue]⏱️ Time:[/blue] {result['build_time']}")
+                print("✅ Build completed successfully!")
+                print(f"📁 Output: {result['exe_path']}")
+                print(f"📊 Size: {result['exe_size']}")
+                print(f"⏱️ Time: {result['build_time']}")
             else:
-                console.print(f"[red]❌ Build failed:[/red] {result['error']}")
+                print(f"❌ Build failed: {result['error']}")
                 raise typer.Exit(1)
                 
         except Exception as e:
-            console.print(f"[red]❌ Build error:[/red] {e}")
+            print(f"❌ Build error: {e}")
             raise typer.Exit(1)
 
 @app.command()
@@ -2028,12 +2002,12 @@ def serve(
     open_browser: bool = typer.Option(True, "--open/--no-open", help="Open browser automatically")
 ):
     """Serve HTML folder for development and testing."""
-    console.print(f"[bold blue]HTML2EXE Pro Development Server[/bold blue]")
-    console.print(f"Serving: [bold]{src}[/bold]")
-    console.print(f"Port: [bold]{port}[/bold]")
+    print(f"HTML2EXE Pro Development Server")
+    print(f"Serving: {src}")
+    print(f"Port: {port}")
     
     if not os.path.exists(src):
-        console.print("[red]Error: Source folder does not exist[/red]")
+        print("Error: Source folder does not exist")
         raise typer.Exit(1)
     
     try:
@@ -2045,28 +2019,28 @@ def serve(
         webview_manager.start_server(src, port)
         
         url = f"http://localhost:{port}"
-        console.print(f"[green]🚀 Server running at:[/green] {url}")
+        print(f"🚀 Server running at: {url}")
         
         if open_browser:
             webbrowser.open(url)
             
-        console.print("Press [bold]Ctrl+C[/bold] to stop the server")
+        print("Press Ctrl+C to stop the server")
         
         # Keep server running
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            console.print("\n[yellow]Server stopped[/yellow]")
+            print("\nServer stopped")
             
     except Exception as e:
-        console.print(f"[red]Server error:[/red] {e}")
+        print(f"Server error: {e}")
         raise typer.Exit(1)
 
 @app.command()
 def doctor():
     """Check system requirements and dependencies."""
-    console.print(f"[bold blue]HTML2EXE Pro System Diagnostics[/bold blue]")
+    print(f"HTML2EXE Pro System Diagnostics")
     
     checks = []
     
@@ -2102,34 +2076,28 @@ def doctor():
     checks.append(("ℹ️", "Architecture", f"{sys.maxsize > 2**32 and '64-bit' or '32-bit'}"))
     
     # Display results
-    table = Table(title="System Check Results")
-    table.add_column("Status", style="bold")
-    table.add_column("Component", style="cyan")
-    table.add_column("Version/Status", style="green")
-    
+    print("\n--- System Check Results ---")
     for status, component, version in checks:
-        table.add_row(status, component, version)
-    
-    console.print(table)
+        print(f"{status} {component:<15} {version}")
     
     # Recommendations
     issues = [check for check in checks if check[0] == "❌"]
     if issues:
-        console.print("\n[bold red]Issues Found:[/bold red]")
+        print("\nIssues Found:")
         for status, component, issue in issues:
-            console.print(f"  • {component}: {issue}")
+            print(f"  • {component}: {issue}")
         
-        console.print("\n[bold yellow]Recommended Actions:[/bold yellow]")
-        console.print("  1. Update Python to 3.10+ if needed")
-        console.print("  2. Install missing packages: pip install -r requirements.txt")
-        console.print("  3. Restart the application after installing dependencies")
+        print("\nRecommended Actions:")
+        print("  1. Update Python to 3.10+ if needed")
+        print("  2. Install missing packages: pip install -r requirements.txt")
+        print("  3. Restart the application after installing dependencies")
     else:
-        console.print("\n[bold green]🎉 All checks passed! Your system is ready.[/bold green]")
+        print("\n🎉 All checks passed! Your system is ready.")
 
 @app.command()
 def clean():
     """Clean build artifacts and temporary files."""
-    console.print("[bold blue]Cleaning build artifacts...[/bold blue]")
+    print("Cleaning build artifacts...")
     
     cleaned = []
     
@@ -2158,24 +2126,24 @@ def clean():
                 pass
     
     if cleaned:
-        console.print(f"[green]✅ Cleaned {len(cleaned)} items:[/green]")
+        print(f"✅ Cleaned {len(cleaned)} items:")
         for item in cleaned[:10]:  # Show first 10 items
-            console.print(f"  {item}")
+            print(f"  {item}")
         if len(cleaned) > 10:
-            console.print(f"  ... and {len(cleaned) - 10} more items")
+            print(f"  ... and {len(cleaned) - 10} more items")
     else:
-        console.print("[yellow]No build artifacts found to clean[/yellow]")
+        print("No build artifacts found to clean")
 
 @app.command()
 def gui():
     """Launch the graphical user interface."""
-    console.print(f"[bold green]Launching HTML2EXE Pro Premium GUI...[/bold green]")
+    print(f"Launching HTML2EXE Pro Premium GUI...")
     
     try:
         gui_app = ModernGUI()
         gui_app.run()
     except Exception as e:
-        console.print(f"[red]GUI Error:[/red] {e}")
+        print(f"GUI Error: {e}")
         raise typer.Exit(1)
 
 # WebView Manager Enhanced
@@ -2205,7 +2173,7 @@ class WebViewManager:
                     threaded=True
                 )
             except Exception as e:
-                console.print(f"[red]Server error:[/red] {e}")
+                print(f"Server error: {e}")
         
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
@@ -2215,14 +2183,16 @@ class WebViewManager:
         try:
             response = requests.get(f"http://127.0.0.1:{port}/api/health", timeout=5)
             if response.status_code == 200:
-                console.print(f"[green]✅ Server started successfully on port {port}[/green]")
+                print(f"✅ Server started successfully on port {port}")
             else:
-                console.print(f"[yellow]⚠️ Server responded with status {response.status_code}[/yellow]")
+                print(f"⚠️ Server responded with status {response.status_code}")
         except requests.exceptions.RequestException as e:
-            console.print(f"[red]❌ Server health check failed:[/red] {e}")
+            print(f"❌ Server health check failed: {e}")
     
     def create_window(self, url: str = None):
         """Create enhanced webview window with premium features."""
+        import webview
+
         if url is None:
             url = f"http://127.0.0.1:{self.server_port or 5000}"
         
@@ -2283,7 +2253,7 @@ class WebViewManager:
             mutex = win32event.CreateMutex(None, False, mutex_name)
             
             if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
-                console.print("[yellow]Application is already running[/yellow]")
+                print("Application is already running")
                 sys.exit(0)
                 
         except ImportError:
@@ -2303,7 +2273,7 @@ class WebViewManager:
             self.observer = Observer()
             self.observer.schedule(handler, source_path, recursive=True)
             self.observer.start()
-            console.print(f"[green]📁 Live reload enabled for: {source_path}[/green]")
+            print(f"📁 Live reload enabled for: {source_path}")
     
     def start(self, source_path: str = None, url: str = None, dev_mode: bool = False):
         """Start the enhanced webview application."""
@@ -2321,14 +2291,15 @@ class WebViewManager:
             # Create and start window
             window = self.create_window(target_url)
             
-            console.print(f"[green]🚀 Starting application: {self.config.metadata.name}[/green]")
-            console.print(f"[blue]🌐 URL: {target_url}[/blue]")
+            print(f"🚀 Starting application: {self.config.metadata.name}")
+            print(f"🌐 URL: {target_url}")
             
             # Start webview
+            import webview
             webview.start(debug=self.config.build.debug)
             
         except Exception as e:
-            console.print(f"[red]❌ Application start error:[/red] {e}")
+            print(f"❌ Application start error: {e}")
             raise
         finally:
             if self.observer:
@@ -2342,6 +2313,9 @@ class SystemIntegration:
     @staticmethod
     def register_protocol(protocol: str, executable_path: str):
         """Register custom protocol handler in Windows registry."""
+        if sys.platform != "win32":
+            print("Warning: Protocol registration is only supported on Windows.")
+            return False
         try:
             import winreg
             
@@ -2359,12 +2333,15 @@ class SystemIntegration:
             
             return True
         except Exception as e:
-            console.print(f"[red]Protocol registration failed:[/red] {e}")
+            print(f"Protocol registration failed: {e}")
             return False
     
     @staticmethod
     def add_to_startup(app_name: str, executable_path: str):
         """Add application to Windows startup."""
+        if sys.platform != "win32":
+            print("Warning: Adding to startup is only supported on Windows.")
+            return False
         try:
             import winreg
             
@@ -2376,7 +2353,7 @@ class SystemIntegration:
             
             return True
         except Exception as e:
-            console.print(f"[red]Startup registration failed:[/red] {e}")
+            print(f"Startup registration failed: {e}")
             return False
 
 class Analytics:
@@ -2402,7 +2379,7 @@ class Analytics:
             }
             
             # In a real implementation, this would send to analytics endpoint
-            console.print(f"[dim]📊 Analytics: {event_name}[/dim]")
+            print(f"📊 Analytics: {event_name}")
             
         except Exception:
             pass  # Fail silently for analytics
@@ -2423,8 +2400,8 @@ def main():
     try:
         # If no command line arguments, show GUI
         if len(sys.argv) == 1:
-            console.print(f"[bold cyan]HTML2EXE Pro Premium v{APP_VERSION}[/bold cyan]")
-            console.print("[dim]No command line arguments provided, launching GUI...[/dim]")
+            print(f"HTML2EXE Pro Premium v{APP_VERSION}")
+            print("No command line arguments provided, launching GUI...")
             
             gui_app = ModernGUI()
             gui_app.run()
@@ -2433,10 +2410,10 @@ def main():
             app()
             
     except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled by user[/yellow]")
+        print("\nOperation cancelled by user")
         sys.exit(0)
     except Exception as e:
-        console.print(f"[red]Fatal error:[/red] {e}")
+        print(f"Fatal error: {e}")
         if "--debug" in sys.argv:
             import traceback
             traceback.print_exc()
