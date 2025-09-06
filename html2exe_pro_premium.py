@@ -78,46 +78,123 @@ def check_and_install_dependencies():
             missing_packages.append(package)
     
     if missing_packages:
-        print("HTML2EXE Pro Premium: Missing required packages. Installing now...")
-        
-        try:
-            for i, package in enumerate(missing_packages):
-                print(f"Installing {package}... ({i+1}/{len(missing_packages)})")
-                
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", package, "--quiet"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            print("Installation complete! Restarting...")
-            time.sleep(1)
-            
-            # Restart the script
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Error: Failed to install dependencies.")
-            print(f"Please run: pip install {' '.join(missing_packages)}")
-            sys.exit(1)
+        print("HTML2EXE Pro Premium: Missing required packages.")
+        print("Please install the following packages manually:")
+        for package in missing_packages:
+            print(f"  pip install {package}")
+        print("\nOr run: pip install --break-system-packages " + " ".join(missing_packages))
+        print("\nNote: Some packages may require system packages. On Ubuntu/Debian:")
+        print("  sudo apt install python3-tk python3-dev")
+        print("\nContinuing with limited functionality...")
+        return False
+    
+    return True
 
 # Run dependency check first
-# check_and_install_dependencies()
+check_and_install_dependencies()
 
-# Now import the required packages
-import typer
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
-from rich.logging import RichHandler
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
-from pydantic import BaseModel, Field, validator
-import appdirs
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import flask
-from flask import Flask, send_from_directory, jsonify, request
-import requests
-import psutil
-from packaging import version
+# Now import the required packages with graceful fallbacks
+try:
+    import typer
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
+    from rich.logging import RichHandler
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    # Fallback for missing rich/typer
+    class MockProgress:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def add_task(self, *args, **kwargs): return 0
+        def update(self, *args, **kwargs): pass
+        def advance(self, *args, **kwargs): pass
+    Progress = MockProgress
+    def SpinnerColumn(): return None
+    def TextColumn(): return None  
+    def BarColumn(): return None
+    def TaskID(): return None
+
+try:
+    from pydantic import BaseModel, Field, validator
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+    # Fallback for missing pydantic
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+        def dict(self): return self.__dict__
+        def save(self, path): pass
+        @classmethod
+        def load(cls, path): return cls()
+    def Field(*args, **kwargs):
+        if 'default' in kwargs:
+            return kwargs['default']
+        elif 'default_factory' in kwargs:
+            return kwargs['default_factory']()
+        return ""
+    def validator(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+try:
+    import appdirs
+    APPDIRS_AVAILABLE = True
+except ImportError:
+    APPDIRS_AVAILABLE = False
+    # Fallback for missing appdirs
+    import tempfile
+    def get_temp_dir(*args, **kwargs):
+        return tempfile.gettempdir()
+    
+    appdirs = type('appdirs', (), {
+        'user_config_dir': get_temp_dir,
+        'user_data_dir': get_temp_dir
+    })()
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    Observer = FileSystemEventHandler = None
+
+try:
+    import flask
+    from flask import Flask, send_from_directory, jsonify, request
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    Flask = None
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+try:
+    from packaging import version
+    PACKAGING_AVAILABLE = True
+except ImportError:
+    PACKAGING_AVAILABLE = False
+
+# Helper functions
+def get_default_copyright():
+    return f"© {datetime.now().year} My Company"
 
 # Constants
 APP_NAME = "HTML2EXE Pro Premium"
@@ -161,7 +238,7 @@ class AppMetadata(BaseModel):
     name: str = "MyHTMLApp"
     version: str = "1.0.0"
     company: str = "My Company"
-    copyright: str = Field(default_factory=lambda: f"© {datetime.now().year} My Company")
+    copyright: str = Field(default_factory=get_default_copyright)
     description: str = "HTML Desktop Application"
     author: str = "Developer"
     email: str = "developer@company.com"
@@ -340,35 +417,58 @@ def generate_default_html(config: AppConfig) -> str:
 """
 
 # Enhanced File System Watcher
-class LiveReloadHandler(FileSystemEventHandler):
-    """Enhanced file system handler with debouncing."""
-    
-    def __init__(self, webview_window, debounce_ms: int = 500):
-        self.webview_window = webview_window
-        self.debounce_ms = debounce_ms
-        self.pending_reload = False
+if WATCHDOG_AVAILABLE:
+    class LiveReloadHandler(FileSystemEventHandler):
+        """Enhanced file system handler with debouncing."""
         
-    def on_modified(self, event):
-        """Handle file modifications with debouncing."""
-        if not event.is_directory and self._should_reload(event.src_path):
-            if not self.pending_reload:
-                self.pending_reload = True
-                threading.Timer(self.debounce_ms / 1000, self._reload).start()
-    
-    def _should_reload(self, filepath: str) -> bool:
-        """Check if file change should trigger reload."""
-        reload_extensions = {'.html', '.css', '.js', '.json', '.xml'}
-        return any(filepath.lower().endswith(ext) for ext in reload_extensions)
-    
-    def _reload(self):
-        """Perform the actual reload."""
-        try:
-            if self.webview_window:
-                self.webview_window.evaluate_js('window.location.reload()')
-        except Exception as e:
-            print(f"Reload failed: {e}")
-        finally:
+        def __init__(self, webview_window, debounce_ms: int = 500):
+            self.webview_window = webview_window
+            self.debounce_ms = debounce_ms
             self.pending_reload = False
+            
+        def on_modified(self, event):
+            """Handle file modifications with debouncing."""
+            if not event.is_directory and self._should_reload(event.src_path):
+                if not self.pending_reload:
+                    self.pending_reload = True
+                    threading.Timer(self.debounce_ms / 1000, self._reload).start()
+        
+        def _should_reload(self, filepath: str) -> bool:
+            """Check if file change should trigger reload."""
+            reload_extensions = {'.html', '.css', '.js', '.json', '.xml'}
+            return any(filepath.lower().endswith(ext) for ext in reload_extensions)
+        
+        def _reload(self):
+            """Perform the actual reload."""
+            try:
+                if self.webview_window:
+                    self.webview_window.evaluate_js('window.location.reload()')
+            except Exception as e:
+                print(f"Reload failed: {e}")
+            finally:
+                self.pending_reload = False
+else:
+    # Fallback when watchdog is not available
+    class LiveReloadHandler:
+        """Fallback file system handler when watchdog is not available."""
+        
+        def __init__(self, webview_window, debounce_ms: int = 500):
+            self.webview_window = webview_window
+            self.debounce_ms = debounce_ms
+            self.pending_reload = False
+            print("Warning: Live reload not available (watchdog not installed)")
+        
+        def on_modified(self, event):
+            """No-op when watchdog is not available."""
+            pass
+        
+        def _should_reload(self, filepath: str) -> bool:
+            """No-op when watchdog is not available."""
+            return False
+        
+        def _reload(self):
+            """No-op when watchdog is not available."""
+            pass
 
 # Icon Generator
 class IconGenerator:
@@ -434,6 +534,112 @@ class IconGenerator:
         return output_path
 
 # Build Engine
+class AutoOptionsSelector:
+    """Automatic options selection for optimal .exe generation."""
+    
+    @staticmethod
+    def analyze_source(source_path: str, source_type: str) -> Dict[str, Any]:
+        """Analyze source and recommend optimal build options."""
+        recommendations = {
+            "onefile": True,
+            "console": False,
+            "debug": False,
+            "upx_compress": False,
+            "strip_debug": True,
+            "optimization_level": "balanced"
+        }
+        
+        if source_type == "folder":
+            # Analyze folder contents
+            if os.path.exists(source_path):
+                file_count = len([f for f in os.listdir(source_path) if os.path.isfile(os.path.join(source_path, f))])
+                total_size = sum(os.path.getsize(os.path.join(source_path, f)) 
+                               for f in os.listdir(source_path) 
+                               if os.path.isfile(os.path.join(source_path, f)))
+                
+                # Large projects might benefit from directory mode
+                if total_size > 50 * 1024 * 1024:  # 50MB
+                    recommendations["onefile"] = False
+                    recommendations["optimization_level"] = "size"
+                
+                # Check for development files
+                dev_files = [f for f in os.listdir(source_path) if f.endswith(('.map', '.ts', '.scss', '.less'))]
+                if dev_files:
+                    recommendations["strip_debug"] = True
+                    recommendations["optimization_level"] = "production"
+                
+                # Check for external dependencies
+                has_external_js = any(f.endswith('.js') and 'http' in open(os.path.join(source_path, f), 'r', errors='ignore').read()[:1000] 
+                                    for f in os.listdir(source_path) if f.endswith('.html'))
+                if has_external_js:
+                    recommendations["offline_mode"] = True
+        
+        elif source_type == "url":
+            # URL-based apps should be single file for portability
+            recommendations["onefile"] = True
+            recommendations["offline_mode"] = True
+            recommendations["optimization_level"] = "portable"
+        
+        return recommendations
+    
+    @staticmethod
+    def get_optimal_pyinstaller_options(config: AppConfig) -> List[str]:
+        """Get optimal PyInstaller command options based on analysis."""
+        analysis = AutoOptionsSelector.analyze_source(config.build.source_path, config.build.source_type)
+        
+        # Ensure output directories exist
+        os.makedirs(config.build.output_dir, exist_ok=True)
+        dist_path = os.path.join(config.build.output_dir, "dist")
+        work_path = os.path.join(config.build.output_dir, "build", "work")
+        os.makedirs(dist_path, exist_ok=True)
+        os.makedirs(work_path, exist_ok=True)
+        
+        options = [
+            "--noconfirm",
+            "--clean",
+            f"--name={config.metadata.name}",
+            f"--distpath={dist_path}",
+            f"--workpath={work_path}"
+        ]
+        
+        # Apply recommendations
+        if analysis["onefile"]:
+            options.append("--onefile")
+        else:
+            options.append("--onedir")
+        
+        if not config.build.console:
+            options.append("--windowed")
+        
+        if analysis["strip_debug"]:
+            options.append("--strip")
+        
+        if analysis["upx_compress"]:
+            options.append("--upx-dir=upx")
+        
+        # Add data files for folder mode
+        if config.build.source_type == "folder":
+            html_assets = os.path.join(config.build.output_dir, "build", "html_assets")
+            # Use proper path separator for PyInstaller
+            if sys.platform == "win32":
+                options.append(f"--add-data={html_assets};html_assets")
+            else:
+                options.append(f"--add-data={html_assets}:html_assets")
+        
+        # Hidden imports
+        hidden_imports = [
+            "flask", "webview", "threading", "json", "os", "sys", "time",
+            "urllib.parse", "base64", "hashlib", "datetime", "tempfile"
+        ]
+        for imp in hidden_imports:
+            options.append(f"--hidden-import={imp}")
+        
+        # Icon
+        if config.build.icon_path and os.path.exists(config.build.icon_path):
+            options.append(f"--icon={config.build.icon_path}")
+        
+        return options
+
 class BuildEngine:
     """Advanced PyInstaller build engine with optimization."""
     
@@ -601,48 +807,16 @@ if __name__ == '__main__':
             }
     
     def _build_pyinstaller_command(self, main_script_path: str) -> List[str]:
-        """Build PyInstaller command with all options."""
-        cmd = [
-            sys.executable, "-m", "PyInstaller",
-            "--noconfirm",
-            "--clean",
-            f"--name={self.config.metadata.name}",
-            f"--distpath={self.dist_dir}",
-            f"--workpath={os.path.join(self.build_dir, 'work')}"
-        ]
+        """Build PyInstaller command with automatic optimization."""
+        # Use automatic options selector for optimal settings
+        auto_options = AutoOptionsSelector.get_optimal_pyinstaller_options(self.config)
         
-        if self.config.build.onefile:
-            cmd.append("--onefile")
+        # Start with PyInstaller command
+        cmd = [sys.executable, "-m", "PyInstaller"] + auto_options
         
-        if not self.config.build.console:
-            cmd.append("--windowed")
-        
-        if self.config.build.icon_path and os.path.exists(self.config.build.icon_path):
-            cmd.append(f"--icon={self.config.build.icon_path}")
-        
-        # Add data files for folder mode
-        if self.config.build.source_type == "folder":
-            html_assets = os.path.join(self.build_dir, "html_assets")
-            cmd.append(f"--add-data={html_assets};html_assets")
-        
-        # Hidden imports
-        hidden_imports = [
-            "flask", "webview", "threading", "json", "os", "sys", "time"
-        ]
-        for imp in hidden_imports:
-            cmd.append(f"--hidden-import={imp}")
-        
-        # UPX compression
-        if self.config.build.upx_compress:
-            cmd.append("--upx-dir=upx")
-        
-        # Debug options
-        if self.config.build.debug:
-            cmd.append("--debug=all")
-        else:
-            cmd.append("--strip")
-        
+        # Add the main script
         cmd.append(main_script_path)
+        
         return cmd
     
     def _get_exe_path(self) -> str:
@@ -677,9 +851,14 @@ class ModernGUI:
         
     def run(self):
         """Run the modern GUI application."""
-        import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
-        import tkinter.font as tkFont
+        try:
+            import tkinter as tk
+            from tkinter import ttk, filedialog, messagebox, simpledialog
+            import tkinter.font as tkFont
+        except ImportError as e:
+            print(f"Error: tkinter not available: {e}")
+            print("Please install tkinter: sudo apt-get install python3-tk (Linux) or ensure tkinter is installed with Python")
+            return
 
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} - Premium Edition")
@@ -1294,9 +1473,16 @@ Ready to build your professional desktop application!
                 self.source_path_var.set(folder)
         else:
             # Simple URL input dialog
-            url = tk.simpledialog.askstring("URL Input", "Enter the URL:")
-            if url:
-                self.source_path_var.set(url)
+            try:
+                from tkinter import simpledialog
+                url = simpledialog.askstring("URL Input", "Enter the URL:")
+                if url:
+                    self.source_path_var.set(url)
+            except ImportError:
+                # Fallback if simpledialog not available
+                url = input("Enter the URL: ")
+                if url:
+                    self.source_path_var.set(url)
     
     def _browse_icon(self):
         """Browse for application icon."""
@@ -1379,13 +1565,40 @@ Ready to build your professional desktop application!
             messagebox.showerror("Preview Error", f"Failed to start preview server: {e}")
     
     def _quick_build(self):
-        """Perform quick build with default settings."""
+        """Perform quick build with automatic optimal settings."""
         if not self.config.build.source_path:
             messagebox.showwarning("Warning", "Please configure a source path/URL first.")
             return
         
         self._sync_config_from_ui()
-        self._start_build()
+        
+        # Apply automatic optimal settings
+        analysis = AutoOptionsSelector.analyze_source(
+            self.config.build.source_path, 
+            self.config.build.source_type
+        )
+        
+        # Update config with optimal settings
+        self.config.build.onefile = analysis["onefile"]
+        self.config.build.console = analysis["console"]
+        self.config.build.debug = analysis["debug"]
+        self.config.build.upx_compress = analysis["upx_compress"]
+        self.config.build.strip_debug = analysis["strip_debug"]
+        self.config.build.offline_mode = analysis.get("offline_mode", False)
+        
+        # Show what settings were selected
+        settings_msg = f"""Auto-Selected Optimal Settings:
+
+• Single File: {'Yes' if analysis['onefile'] else 'No'}
+• Console Window: {'Yes' if analysis['console'] else 'No'}
+• Debug Mode: {'Yes' if analysis['debug'] else 'No'}
+• Offline Mode: {'Yes' if analysis.get('offline_mode', False) else 'No'}
+• Optimization: {analysis['optimization_level']}
+
+Proceed with build?"""
+        
+        if messagebox.askyesno("Auto Build Settings", settings_msg):
+            self._start_build()
     
     def _start_build(self):
         """Start the build process with progress dialog."""
@@ -1435,7 +1648,12 @@ Ready to build your professional desktop application!
     
     def _test_url(self):
         """Test URL accessibility."""
-        url = tk.simpledialog.askstring("URL Test", "Enter URL to test:")
+        try:
+            from tkinter import simpledialog
+            url = simpledialog.askstring("URL Test", "Enter URL to test:")
+        except ImportError:
+            url = input("Enter URL to test: ")
+        
         if url:
             try:
                 import urllib.request
@@ -1926,43 +2144,66 @@ https://html2exe-pro.com/docs
         ttk.Button(self.dialog, text="Close", command=self.dialog.destroy).pack(pady=(0, 20))
 
 # CLI Interface with Typer
-app = typer.Typer(help="HTML2EXE Pro Premium - Convert HTML to Professional Desktop Apps")
+if RICH_AVAILABLE:
+    app = typer.Typer(help="HTML2EXE Pro Premium - Convert HTML to Professional Desktop Apps")
+else:
+    # Fallback when typer is not available
+    class MockTyper:
+        def command(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        def __call__(self, *args, **kwargs):
+            pass
+    app = MockTyper()
 
 @app.command()
-def build(
-    src: str = typer.Option(..., "--src", "-s", help="Source folder or URL"),
-    name: str = typer.Option("MyHTMLApp", "--name", "-n", help="Application name"),
-    icon: str = typer.Option("", "--icon", "-i", help="Icon file path (.ico, .png)"),
-    onefile: bool = typer.Option(True, "--onefile/--no-onefile", help="Create single file executable"),
-    offline: bool = typer.Option(False, "--offline", help="Enable offline mode"),
-    kiosk: bool = typer.Option(False, "--kiosk", help="Enable kiosk mode"),
-    width: int = typer.Option(1200, "--width", help="Window width"),
-    height: int = typer.Option(800, "--height", help="Window height"),
-    debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
-    output: str = typer.Option("dist", "--output", "-o", help="Output directory")
+def auto_build(
+    src: str = "..." if RICH_AVAILABLE else "",
+    name: str = "MyHTMLApp",
+    output: str = "dist"
 ):
-    """Build HTML application to executable."""
-    print(f"HTML2EXE Pro Premium v{APP_VERSION}")
+    """Automatically build HTML application with optimal settings."""
+    print(f"HTML2EXE Pro Premium v{APP_VERSION} - Auto Build Mode")
     print(f"Building application: {name}")
+    print("🔍 Analyzing source and selecting optimal settings...")
     
     # Create configuration
     config = AppConfig()
     config.metadata.name = name
     config.build.source_path = src
     config.build.source_type = "url" if src.startswith(("http://", "https://")) else "folder"
-    config.build.icon_path = icon
-    config.build.onefile = onefile
-    config.build.offline_mode = offline
-    config.build.debug = debug
     config.build.output_dir = output
-    config.window.kiosk = kiosk
-    config.window.width = width
-    config.window.height = height
+    
+    # Auto-analyze and apply optimal settings
+    analysis = AutoOptionsSelector.analyze_source(src, config.build.source_type)
+    print(f"📊 Analysis results: {analysis['optimization_level']} optimization")
+    
+    # Apply automatic recommendations
+    config.build.onefile = analysis["onefile"]
+    config.build.console = analysis["console"]
+    config.build.debug = analysis["debug"]
+    config.build.upx_compress = analysis["upx_compress"]
+    config.build.strip_debug = analysis["strip_debug"]
+    config.build.offline_mode = analysis.get("offline_mode", False)
+    
+    # Set reasonable window defaults
+    config.window.width = 1200
+    config.window.height = 800
+    config.window.resizable = True
+    config.window.center = True
+    
+    print(f"⚙️ Selected options:")
+    print(f"  • Single file: {'Yes' if config.build.onefile else 'No'}")
+    print(f"  • Console: {'Yes' if config.build.console else 'No'}")
+    print(f"  • Debug: {'Yes' if config.build.debug else 'No'}")
+    print(f"  • Offline mode: {'Yes' if config.build.offline_mode else 'No'}")
+    print(f"  • Optimization: {analysis['optimization_level']}")
     
     # Validate source
     if config.build.source_type == "folder" and not os.path.exists(src):
         print("Error: Source folder does not exist")
-        raise typer.Exit(1)
+        raise sys.exit(1)
     
     # Start build
     with Progress(
@@ -1989,17 +2230,84 @@ def build(
                 print(f"⏱️ Time: {result['build_time']}")
             else:
                 print(f"❌ Build failed: {result['error']}")
-                raise typer.Exit(1)
+                raise sys.exit(1)
                 
         except Exception as e:
             print(f"❌ Build error: {e}")
-            raise typer.Exit(1)
+            raise sys.exit(1)
+
+@app.command()
+def build(
+    src: str = "..." if RICH_AVAILABLE else "",
+    name: str = "MyHTMLApp",
+    icon: str = "",
+    onefile: bool = True,
+    offline: bool = False,
+    kiosk: bool = False,
+    width: int = 1200,
+    height: int = 800,
+    debug: bool = False,
+    output: str = "dist"
+):
+    """Build HTML application to executable."""
+    print(f"HTML2EXE Pro Premium v{APP_VERSION}")
+    print(f"Building application: {name}")
+    
+    # Create configuration
+    config = AppConfig()
+    config.metadata.name = name
+    config.build.source_path = src
+    config.build.source_type = "url" if src.startswith(("http://", "https://")) else "folder"
+    config.build.icon_path = icon
+    config.build.onefile = onefile
+    config.build.offline_mode = offline
+    config.build.debug = debug
+    config.build.output_dir = output
+    config.window.kiosk = kiosk
+    config.window.width = width
+    config.window.height = height
+    
+    # Validate source
+    if config.build.source_type == "folder" and not os.path.exists(src):
+        print("Error: Source folder does not exist")
+        raise sys.exit(1)
+    
+    # Start build
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        transient=True
+    ) as progress:
+        
+        task = progress.add_task("Building...", total=100)
+        
+        def progress_callback(message):
+            progress.update(task, description=message)
+            progress.advance(task, 10)
+        
+        try:
+            engine = BuildEngine(config, progress_callback)
+            result = engine.build()
+            
+            if result["success"]:
+                print("✅ Build completed successfully!")
+                print(f"📁 Output: {result['exe_path']}")
+                print(f"📊 Size: {result['exe_size']}")
+                print(f"⏱️ Time: {result['build_time']}")
+            else:
+                print(f"❌ Build failed: {result['error']}")
+                raise sys.exit(1)
+                
+        except Exception as e:
+            print(f"❌ Build error: {e}")
+            raise sys.exit(1)
 
 @app.command()
 def serve(
-    src: str = typer.Option(".", "--src", "-s", help="Source folder to serve"),
-    port: int = typer.Option(8000, "--port", "-p", help="Server port"),
-    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open browser automatically")
+    src: str = ".",
+    port: int = 8000,
+    open_browser: bool = True
 ):
     """Serve HTML folder for development and testing."""
     print(f"HTML2EXE Pro Development Server")
@@ -2008,7 +2316,7 @@ def serve(
     
     if not os.path.exists(src):
         print("Error: Source folder does not exist")
-        raise typer.Exit(1)
+        raise sys.exit(1)
     
     try:
         config = AppConfig()
@@ -2035,7 +2343,7 @@ def serve(
             
     except Exception as e:
         print(f"Server error: {e}")
-        raise typer.Exit(1)
+        raise sys.exit(1)
 
 @app.command()
 def doctor():
@@ -2144,7 +2452,7 @@ def gui():
         gui_app.run()
     except Exception as e:
         print(f"GUI Error: {e}")
-        raise typer.Exit(1)
+        raise sys.exit(1)
 
 # WebView Manager Enhanced
 class WebViewManager:
@@ -2191,7 +2499,12 @@ class WebViewManager:
     
     def create_window(self, url: str = None):
         """Create enhanced webview window with premium features."""
-        import webview
+        try:
+            import webview
+        except ImportError as e:
+            print(f"Error: pywebview not available: {e}")
+            print("Please install pywebview: pip install pywebview")
+            return None
 
         if url is None:
             url = f"http://127.0.0.1:{self.server_port or 5000}"
@@ -2295,8 +2608,13 @@ class WebViewManager:
             print(f"🌐 URL: {target_url}")
             
             # Start webview
-            import webview
-            webview.start(debug=self.config.build.debug)
+            try:
+                import webview
+                webview.start(debug=self.config.build.debug)
+            except ImportError as e:
+                print(f"Error: pywebview not available: {e}")
+                print("Please install pywebview: pip install pywebview")
+                return
             
         except Exception as e:
             print(f"❌ Application start error: {e}")
